@@ -9,7 +9,7 @@ Test Coverage:
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.core.types import Chunk
 from src.core.settings import Settings
@@ -149,7 +149,7 @@ def test_chunk_id_generation_missing_source_path(upserter_with_mock_store):
     
     # Chunk validation will catch this during initialization
     with pytest.raises(ValueError, match="source_path"):
-        chunk = Chunk(
+        Chunk(
             id="temp",
             text="Test",
             metadata={"chunk_index": 0},  # Missing source_path
@@ -192,7 +192,28 @@ def test_upsert_single_chunk(upserter_with_mock_store, sample_chunk, sample_vect
     assert len(records) == 1
     assert records[0]["id"] == chunk_ids[0]
     assert records[0]["vector"] == sample_vector
+    assert records[0]["document"] == sample_chunk.text
     assert records[0]["metadata"]["text"] == sample_chunk.text
+
+
+def test_upsert_preserves_existing_metadata_text(upserter_with_mock_store, sample_vector):
+    """Existing metadata text should not be overwritten by enhanced chunk text."""
+    upserter, mock_store = upserter_with_mock_store
+    chunk = Chunk(
+        id="temp_id",
+        text="Generated figure description.",
+        metadata={
+            "source_path": "data/documents/test.pdf",
+            "chunk_index": 0,
+            "text": "[IMAGE: img_001]\nGenerated figure description.",
+        },
+    )
+
+    upserter.upsert([chunk], [sample_vector])
+
+    records = mock_store.upsert.call_args[0][0]
+    assert records[0]["document"] == "Generated figure description."
+    assert records[0]["metadata"]["text"] == "[IMAGE: img_001]\nGenerated figure description."
 
 
 def test_upsert_multiple_chunks(upserter_with_mock_store):

@@ -117,6 +117,7 @@ def render() -> None:
                     text = chunk.get("text", "")
                     meta = chunk.get("metadata", {})
                     chunk_id = chunk["id"]
+                    word_count = chunk.get("word_count", meta.get("word_count", 0))
 
                     # Title from metadata or first line
                     title = meta.get("title", "")
@@ -128,7 +129,7 @@ def render() -> None:
                     with st.container(border=True):
                         st.markdown(
                             f"**Chunk {cidx + 1}** · `{chunk_id[-16:]}` · "
-                            f"{len(text)} chars"
+                            f"{word_count} words"
                         )
                         # Show the actual chunk text (scrollable)
                         _height = max(120, min(len(text) // 2, 600))

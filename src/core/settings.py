@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -87,6 +88,17 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     return value
 
 
+def _expand_env_value(value: Any) -> Any:
+    """Expand ${VAR_NAME} placeholders in settings values."""
+    if isinstance(value, str):
+        return os.path.expandvars(value)
+    if isinstance(value, dict):
+        return {key: _expand_env_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_value(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     provider: str
@@ -160,6 +172,7 @@ class VisionLLMSettings:
     provider: str
     model: str
     max_image_size: int
+    temperature: Optional[float] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
     azure_endpoint: Optional[str] = None
@@ -222,6 +235,11 @@ class Settings:
                 provider=_require_str(vision_llm, "provider", "vision_llm"),
                 model=_require_str(vision_llm, "model", "vision_llm"),
                 max_image_size=_require_int(vision_llm, "max_image_size", "vision_llm"),
+                temperature=(
+                    _require_number(vision_llm, "temperature", "vision_llm")
+                    if "temperature" in vision_llm
+                    else None
+                ),
                 api_key=vision_llm.get("api_key"),
                 api_version=vision_llm.get("api_version"),
                 azure_endpoint=vision_llm.get("azure_endpoint"),
@@ -321,6 +339,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
     with settings_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
 
-    settings = Settings.from_dict(data or {})
+    settings = Settings.from_dict(_expand_env_value(data or {}))
     validate_settings(settings)
     return settings

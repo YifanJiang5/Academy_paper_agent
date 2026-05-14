@@ -10,6 +10,8 @@ Tests verify:
 Note: Additional integration tests are in tests/integration/test_pdf_loader_integration.py
 """
 
+import base64
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,9 @@ from src.libs.loader.pdf_loader import PdfLoader
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "sample_documents"
 SIMPLE_PDF = FIXTURES_DIR / "simple.pdf"
 IMAGES_PDF = FIXTURES_DIR / "with_images.pdf"
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 class TestBaseLoader:
@@ -59,7 +64,7 @@ class TestPdfLoaderInitialization:
     
     def test_default_initialization(self):
         """PdfLoader can be initialized with defaults."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         assert loader.extract_images is True
         assert loader.image_storage_dir == Path("data/images")
     
@@ -74,7 +79,7 @@ class TestPdfLoaderInitialization:
     
     def test_markitdown_available(self):
         """PdfLoader requires MarkItDown to be available."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         assert loader._markitdown is not None
 
 
@@ -155,6 +160,95 @@ class TestPdfLoaderHelperMethods:
         assert image_id == "abc123de_2_0"
 
 
+class TestMinerUCompatibility:
+    """Tests for MinerU result normalization and fallback behavior."""
+
+    def test_replace_mineru_image_links_normalizes_images(self, tmp_path):
+        """MinerU image links are converted to canonical placeholders."""
+        mineru_dir = tmp_path / "mineru_result"
+        images_dir = mineru_dir / "images"
+        images_dir.mkdir(parents=True)
+
+        (images_dir / "chart.png").write_bytes(TINY_PNG)
+        (images_dir / "table.png").write_bytes(TINY_PNG)
+
+        full_md = mineru_dir / "full.md"
+        full_md.write_text(
+            "# Report\n\n"
+            "Chart:\n\n![Chart](images/chart.png)\n\n"
+            "<table><tr><td>A</td></tr></table>\n"
+            '<img src="images/table.png" />\n',
+            encoding="utf-8",
+        )
+        (mineru_dir / "content_list.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "type": "image",
+                        "img_path": "images/chart.png",
+                        "page_idx": 1,
+                        "bbox": [1, 2, 3, 4],
+                    },
+                    {
+                        "type": "table",
+                        "img_path": "images/table.png",
+                        "page_idx": 2,
+                        "bbox": [5, 6, 7, 8],
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        loader = PdfLoader(
+            image_storage_dir=tmp_path / "stored_images",
+            use_mineru=True,
+            mineru_api_key="test-token",
+        )
+
+        text, images = loader._replace_mineru_image_links(
+            full_md.read_text(encoding="utf-8"),
+            full_md,
+            "abc123def456",
+        )
+
+        assert "![Chart]" not in text
+        assert "<img" not in text
+        assert "[IMAGE: abc123de_2_1]" in text
+        assert "[IMAGE: abc123de_3_2]" in text
+        assert len(images) == 2
+        assert images[0]["page"] == 2
+        assert images[0]["position"]["bbox"] == [1, 2, 3, 4]
+        assert images[1]["position"]["type"] == "table"
+        for image in images:
+            assert Path(image["path"]).exists()
+
+    def test_mineru_failure_falls_back_to_markitdown(self, tmp_path, monkeypatch):
+        """MinerU failures do not break PDF loading when fallback is enabled."""
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n% test\n")
+
+        loader = PdfLoader(
+            extract_images=False,
+            use_mineru=True,
+            mineru_api_key="test-token",
+            fallback_to_markitdown=True,
+        )
+
+        def fail_mineru(_path, _doc_hash):
+            raise RuntimeError("network unavailable")
+
+        monkeypatch.setattr(loader, "_parse_with_mineru", fail_mineru)
+        monkeypatch.setattr(loader, "_parse_with_markitdown", lambda _path: "# Fallback\n\nText")
+
+        doc = loader.load(pdf_path)
+
+        assert doc.text == "# Fallback\n\nText"
+        assert doc.metadata["parser"] == "markitdown"
+        assert "network unavailable" in doc.metadata["parser_fallback_reason"]
+        assert "parser_warning" in doc.metadata
+
+
 class TestPdfConversionCore:
     """Tests for core PDF conversion functionality using real PDF files."""
     
@@ -206,7 +300,7 @@ class TestPdfConversionCore:
         if not IMAGES_PDF.exists():
             pytest.skip(f"Test fixture not found: {IMAGES_PDF}")
         
-        loader = PdfLoader(extract_images=True)
+        loader = PdfLoader(extract_images=True, use_mineru=False)
         doc = loader.load(IMAGES_PDF)
         
         # Verify basic structure
@@ -240,7 +334,7 @@ class TestPdfConversionCore:
         if not IMAGES_PDF.exists():
             pytest.skip(f"Test fixture not found: {IMAGES_PDF}")
         
-        loader = PdfLoader(extract_images=False)
+        loader = PdfLoader(extract_images=False, use_mineru=False)
         doc = loader.load(IMAGES_PDF)
         
         # Should still extract text
@@ -254,7 +348,7 @@ class TestPdfConversionCore:
         if not SIMPLE_PDF.exists():
             pytest.skip(f"Test fixture not found: {SIMPLE_PDF}")
         
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         
         # Load same file twice
         doc1 = loader.load(SIMPLE_PDF)
@@ -269,7 +363,7 @@ class TestPdfConversionCore:
         if not SIMPLE_PDF.exists():
             pytest.skip(f"Test fixture not found: {SIMPLE_PDF}")
         
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         doc = loader.load(SIMPLE_PDF)
         
         # Serialize to dict

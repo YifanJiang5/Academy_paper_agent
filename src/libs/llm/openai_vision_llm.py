@@ -80,7 +80,12 @@ class OpenAIVisionLLM(BaseVisionLLM):
         vision_settings = getattr(settings, "vision_llm", None)
         
         # Temperature / max_tokens: vision_llm section > llm section defaults
-        self.default_temperature = getattr(settings.llm, 'temperature', 0.0)
+        vision_temperature = getattr(vision_settings, 'temperature', None) if vision_settings else None
+        self.default_temperature = (
+            vision_temperature
+            if vision_temperature is not None
+            else getattr(settings.llm, 'temperature', 0.0)
+        )
         self.default_max_tokens = getattr(settings.llm, 'max_tokens', 4096)
         
         # Model / deployment name
@@ -132,7 +137,12 @@ class OpenAIVisionLLM(BaseVisionLLM):
             if not self.api_version:
                 self.api_version = "2024-02-15-preview"
         else:
-            self.base_url = self.DEFAULT_BASE_URL
+            settings_base_url = None
+            if vision_settings:
+                settings_base_url = getattr(vision_settings, 'base_url', None)
+            if not settings_base_url:
+                settings_base_url = getattr(settings.llm, 'base_url', None)
+            self.base_url = settings_base_url if settings_base_url else self.DEFAULT_BASE_URL
         
         self._extra_config = kwargs
     

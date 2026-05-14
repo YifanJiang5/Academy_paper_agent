@@ -7,7 +7,6 @@ a lightweight, open-source embedding database designed for local-first deploymen
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 try:
@@ -182,8 +181,9 @@ class ChromaStore(BaseVectorStore):
             
             metadatas.append(sanitized_metadata)
             
-            # Document: use metadata.text if available, otherwise use id
-            document = metadata.get('text', record['id'])
+            # Document: prefer the fully transformed chunk text. Metadata text may
+            # intentionally preserve source placeholders for traceability.
+            document = record.get('document', metadata.get('text', record['id']))
             documents.append(str(document))
         
         # Perform upsert (ChromaDB's add() is idempotent with same IDs)

@@ -160,6 +160,31 @@ def test_metadata_inheritance(chunker, sample_document):
         assert chunk.metadata["page_count"] == 3
 
 
+def test_word_count_added_to_chunk_metadata(chunker, sample_document):
+    """Test that each chunk metadata includes a word count."""
+    chunks = chunker.split_document(sample_document)
+
+    assert chunks[0].metadata["word_count"] == 3
+    assert chunks[1].metadata["word_count"] == 3
+    assert chunks[2].metadata["word_count"] == 3
+
+
+def test_document_title_and_subtitle_metadata(chunker):
+    """Test paper title stays document-level while sub-title follows headings."""
+    doc = Document(
+        id="doc_paper",
+        text="# Paper Title\nAuthor line\n\n# Abstract\nAbstract text.\n\n# Methods\nMethod text.",
+        metadata={"source_path": "paper.pdf", "title": "Paper Title"},
+    )
+
+    chunks = chunker.split_document(doc)
+
+    assert all(chunk.metadata["title"] == "Paper Title" for chunk in chunks)
+    assert chunks[0].metadata["sub-title"] == "Paper Title"
+    assert chunks[1].metadata["sub-title"] == "Abstract"
+    assert chunks[2].metadata["sub-title"] == "Methods"
+
+
 def test_metadata_independence(chunker, sample_document):
     """Test that each chunk gets its own metadata dict (not shared reference)."""
     chunks = chunker.split_document(sample_document)

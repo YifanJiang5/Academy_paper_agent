@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.libs.splitter.text_utils import count_words
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,10 +144,12 @@ class DataService:
             docs = results.get("documents", [])
             metas = results.get("metadatas", [])
             for i, cid in enumerate(ids):
+                text = docs[i] if docs else ""
                 chunks.append(
                     {
                         "id": cid,
-                        "text": docs[i] if docs else "",
+                        "text": text,
+                        "word_count": count_words(text),
                         "metadata": metas[i] if metas else {},
                     }
                 )

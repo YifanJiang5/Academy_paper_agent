@@ -22,10 +22,15 @@ Design Principles:
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import TYPE_CHECKING, List
 
 from src.core.types import Chunk, Document
 from src.libs.splitter.splitter_factory import SplitterFactory
+from src.libs.splitter.text_utils import count_words
+
+
+MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}[ \t]*(?P<title>.+?)\s*$", re.MULTILINE)
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -123,10 +128,23 @@ class DocumentChunker:
             )
         
         # Step 2: Transform text fragments into Chunk objects with enrichment
+        document_title = self._extract_document_title(document)
+        current_subtitle = document_title
+
         chunks: List[Chunk] = []
         for index, text in enumerate(text_fragments):
+            heading = self._extract_first_heading(text)
+            if heading:
+                current_subtitle = heading
+
             chunk_id = self._generate_chunk_id(document.id, index, text)
-            chunk_metadata = self._inherit_metadata(document, index, text)
+            chunk_metadata = self._inherit_metadata(
+                document,
+                index,
+                text,
+                document_title=document_title,
+                subtitle=current_subtitle,
+            )
             
             chunk = Chunk(
                 id=chunk_id,
@@ -168,7 +186,15 @@ class DocumentChunker:
         # Format: {doc_id}_{index:04d}_{hash_8chars}
         return f"{doc_id}_{index:04d}_{content_hash}"
     
-    def _inherit_metadata(self, document: Document, chunk_index: int, chunk_text: str = "") -> dict:
+    def _inherit_metadata(
+        self,
+        document: Document,
+        chunk_index: int,
+        chunk_text: str = "",
+        *,
+        document_title: str | None = None,
+        subtitle: str | None = None,
+    ) -> dict:
         """Inherit metadata from document and add chunk-specific fields.
         
         This creates a new metadata dict containing:
@@ -205,8 +231,6 @@ class DocumentChunker:
             >>> metadata["image_refs"]
             ['img_001']
         """
-        import re
-        
         # Copy all document metadata (shallow copy is sufficient for primitives)
         chunk_metadata = document.metadata.copy()
         
@@ -219,7 +243,12 @@ class DocumentChunker:
         # Add chunk-specific fields
         chunk_metadata["chunk_index"] = chunk_index
         chunk_metadata["source_ref"] = document.id
-        
+        chunk_metadata["word_count"] = count_words(chunk_text)
+        if document_title:
+            chunk_metadata["title"] = document_title
+        if subtitle:
+            chunk_metadata["sub-title"] = subtitle
+
         # Extract image_refs from chunk text by finding [IMAGE: xxx] placeholders
         image_refs = []
         if chunk_text:
@@ -247,3 +276,27 @@ class DocumentChunker:
             chunk_metadata["page_num"] = chunk_images[0].get("page")
         
         return chunk_metadata
+
+    def _extract_document_title(self, document: Document) -> str:
+        """Return the paper-level title, preferring the parsed document title."""
+        metadata_title = str(document.metadata.get("title") or "").strip()
+        if metadata_title:
+            return metadata_title
+
+        heading = self._extract_first_heading(document.text)
+        if heading:
+            return heading
+
+        first_line = next((line.strip() for line in document.text.splitlines() if line.strip()), "")
+        return first_line
+
+    def _extract_first_heading(self, text: str) -> str | None:
+        """Extract the first Markdown heading title from text."""
+        if not text:
+            return None
+
+        match = MARKDOWN_HEADING_RE.search(text)
+        if not match:
+            return None
+
+        return match.group("title").strip()

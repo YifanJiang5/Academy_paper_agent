@@ -294,6 +294,15 @@ class TestVisionLLMFactory:
     def setup_method(self):
         """Clean up registry before each test."""
         LLMFactory._VISION_PROVIDERS.clear()
+
+    def teardown_method(self):
+        """Restore built-in providers so other test modules are isolated."""
+        LLMFactory._VISION_PROVIDERS.clear()
+        from src.libs.llm.azure_vision_llm import AzureVisionLLM
+        from src.libs.llm.openai_vision_llm import OpenAIVisionLLM
+
+        LLMFactory.register_vision_provider("azure", AzureVisionLLM)
+        LLMFactory.register_vision_provider("openai", OpenAIVisionLLM)
     
     def test_register_vision_provider_success(self):
         """register_vision_provider registers valid provider."""
@@ -462,6 +471,15 @@ class TestVisionLLMIntegration:
         """Clean up registry and register fake provider."""
         LLMFactory._VISION_PROVIDERS.clear()
         LLMFactory.register_vision_provider("fake", FakeVisionLLM)
+
+    def teardown_method(self):
+        """Restore built-in providers so other test modules are isolated."""
+        LLMFactory._VISION_PROVIDERS.clear()
+        from src.libs.llm.azure_vision_llm import AzureVisionLLM
+        from src.libs.llm.openai_vision_llm import OpenAIVisionLLM
+
+        LLMFactory.register_vision_provider("azure", AzureVisionLLM)
+        LLMFactory.register_vision_provider("openai", OpenAIVisionLLM)
     
     def test_end_to_end_vision_workflow(self):
         """Full workflow: create from factory -> call vision method."""

@@ -58,10 +58,10 @@ def test_image_captioner_azure_integration():
     print(f"New Text: '{processed_chunk.text}'")
     
     assert "[IMAGE: img_001]" in processed_chunk.text
-    assert "(Description:" in processed_chunk.text
+    assert "[IMAGE: img_001]" not in processed_chunk.text
     assert "image_captions" in processed_chunk.metadata
     assert len(processed_chunk.metadata["image_captions"]) == 1
     
-    caption = processed_chunk.metadata["image_captions"][0]["caption"]
+    caption = processed_chunk.metadata["image_captions"]["img_001"]
     print(f"Generated Caption: {caption}")
     assert len(caption) > 10

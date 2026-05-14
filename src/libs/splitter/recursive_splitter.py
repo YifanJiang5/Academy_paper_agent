@@ -1,86 +1,37 @@
-"""Recursive Splitter implementation using LangChain.
-
-This module provides a recursive character-based text splitting strategy
-that respects document structure (headers, code blocks) and splits text
-hierarchically to maintain semantic coherence.
-"""
+"""Word-based paragraph splitter for Markdown academic documents."""
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
-
-try:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-except ImportError:
-    RecursiveCharacterTextSplitter = None  # type: ignore[misc, assignment]
+from typing import Any
 
 from src.libs.splitter.base_splitter import BaseSplitter
+from src.libs.splitter.text_utils import count_words, is_markdown_heading, split_markdown_sections
 
 
 class RecursiveSplitter(BaseSplitter):
-    """Recursive character-based text splitter.
-    
-    This splitter uses LangChain's RecursiveCharacterTextSplitter to split text
-    by trying different separators in order (paragraphs, sentences, words) while
-    respecting Markdown structure elements like headers and code blocks.
-    
-    Design Principles Applied:
-    - Pluggable: Implements BaseSplitter interface for factory instantiation.
-    - Config-Driven: Reads chunk_size and chunk_overlap from settings.
-    - Fail-Fast: Raises ImportError if langchain-text-splitters is not installed.
-    - Graceful Degradation: Validates inputs and provides clear error messages.
-    
-    Attributes:
-        chunk_size: Maximum size of each chunk in characters.
-        chunk_overlap: Number of overlapping characters between chunks.
-        separators: List of separators to try in order (defaults to Markdown-aware).
-        
-    Raises:
-        ImportError: If langchain-text-splitters package is not installed.
+    """Markdown-aware word-based splitter.
+
+    Behavior:
+    - Split by Markdown headings first so chunks never cross section boundaries.
+    - Within each section, only split on paragraph boundaries (``"\n\n"``).
+    - Treat ``chunk_size`` as a soft target in words when combining paragraphs.
+    - Preserve a whole paragraph even when a single paragraph exceeds ``chunk_size``.
+    - Apply overlap in paragraph units, never by cutting through a paragraph.
     """
-    
-    DEFAULT_SEPARATORS = [
-        "\n\n",  # Double newline (paragraphs)
-        "\n",    # Single newline
-        ". ",    # Sentence endings
-        "! ",
-        "? ",
-        "; ",
-        ", ",
-        " ",     # Spaces
-        "",      # Characters
-    ]
-    
+
+    DEFAULT_SEPARATORS = ["\n\n"]
+
     def __init__(
         self,
         settings: Any,
-        chunk_size: Optional[int] = None,
-        chunk_overlap: Optional[int] = None,
-        separators: Optional[List[str]] = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        separators: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize RecursiveSplitter.
-        
-        Args:
-            settings: Application settings containing ingestion configuration.
-            chunk_size: Optional override for chunk size (defaults to settings.ingestion.chunk_size).
-            chunk_overlap: Optional override for overlap (defaults to settings.ingestion.chunk_overlap).
-            separators: Optional list of separator strings (defaults to Markdown-aware separators).
-            **kwargs: Additional parameters passed to LangChain splitter.
-        
-        Raises:
-            ImportError: If langchain-text-splitters is not installed.
-            ValueError: If chunk_size or chunk_overlap are invalid.
-        """
-        if RecursiveCharacterTextSplitter is None:
-            raise ImportError(
-                "langchain-text-splitters is not installed. "
-                "Install it with: pip install langchain-text-splitters"
-            )
-        
+        """Initialize RecursiveSplitter."""
         self.settings = settings
-        
-        # Extract configuration from settings with overrides
+
         try:
             ingestion_config = settings.ingestion
             self.chunk_size = chunk_size if chunk_size is not None else ingestion_config.chunk_size
@@ -90,82 +41,113 @@ class RecursiveSplitter(BaseSplitter):
                 "Missing ingestion configuration in settings. "
                 "Expected settings.ingestion.chunk_size and settings.ingestion.chunk_overlap"
             ) from e
-        
-        # Validate configuration
+
         if not isinstance(self.chunk_size, int) or self.chunk_size <= 0:
             raise ValueError(f"chunk_size must be a positive integer, got: {self.chunk_size}")
-        
+
         if not isinstance(self.chunk_overlap, int) or self.chunk_overlap < 0:
             raise ValueError(f"chunk_overlap must be a non-negative integer, got: {self.chunk_overlap}")
-        
+
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError(
                 f"chunk_overlap ({self.chunk_overlap}) must be less than "
                 f"chunk_size ({self.chunk_size})"
             )
-        
+
         self.separators = separators if separators is not None else self.DEFAULT_SEPARATORS
-        
-        # Initialize LangChain splitter
-        self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            separators=self.separators,
-            length_function=len,
-            is_separator_regex=False,
-            **kwargs,
-        )
-    
+
+    @classmethod
+    def _count_words(cls, text: str) -> int:
+        """Count words for chunk sizing and display."""
+        return count_words(text)
+
+    @classmethod
+    def _count_tokens(cls, text: str) -> int:
+        """Backward-compatible alias for older tests and callers."""
+        return cls._count_words(text)
+
     def split_text(
         self,
         text: str,
-        trace: Optional[Any] = None,
+        trace: Any | None = None,
         **kwargs: Any,
-    ) -> List[str]:
-        """Split text into chunks recursively.
-        
-        This method splits text by trying different separators hierarchically,
-        preserving document structure like Markdown headers and code blocks.
-        
-        Args:
-            text: Input text to split. Must be a non-empty string.
-            trace: Optional TraceContext for observability (reserved for Stage F).
-            **kwargs: Additional parameters (currently unused, reserved for future extensions).
-        
-        Returns:
-            A list of text chunks. Each chunk respects the configured chunk_size
-            and chunk_overlap. Order preserves the original text sequence.
-        
-        Raises:
-            ValueError: If input text is invalid (empty, wrong type).
-            RuntimeError: If splitting fails unexpectedly.
-        
-        Example:
-            >>> splitter = RecursiveSplitter(settings)
-            >>> chunks = splitter.split_text("# Header\\n\\nParagraph 1.\\n\\nParagraph 2.")
-            >>> len(chunks)
-            1  # If text fits in chunk_size
-        """
-        # Validate input
+    ) -> list[str]:
+        """Split text by heading-scoped paragraph groups measured in words."""
         self.validate_text(text)
-        
+
         try:
-            # Perform splitting
-            chunks = self._splitter.split_text(text)
-            
-            # Handle edge case: LangChain may return empty list for very short text
+            chunks: list[str] = []
+            for section in split_markdown_sections(text):
+                chunks.extend(self._split_section(section))
+
             if not chunks:
                 chunks = [text]
-            
-            # Validate output
+
             self.validate_chunks(chunks)
-            
             return chunks
-            
+
         except Exception as e:
-            # Catch any LangChain errors and provide context
             raise RuntimeError(
                 f"RecursiveSplitter failed to split text: {e}. "
-                f"Text length: {len(text)}, chunk_size: {self.chunk_size}, "
+                f"Text words: {self._count_words(text)}, chunk_size: {self.chunk_size}, "
                 f"chunk_overlap: {self.chunk_overlap}"
             ) from e
+
+    def _split_section(self, section_text: str) -> list[str]:
+        """Split a single Markdown section by paragraph boundaries only."""
+        separator = self.separators[0] if self.separators else self.DEFAULT_SEPARATORS[0]
+        paragraphs = [part.strip() for part in section_text.split(separator) if part.strip()]
+
+        if not paragraphs:
+            return [section_text]
+
+        if len(paragraphs) >= 2 and is_markdown_heading(paragraphs[0]):
+            paragraphs = [separator.join(paragraphs[:2])] + paragraphs[2:]
+
+        return self._merge_paragraphs(paragraphs, separator)
+
+    def _merge_paragraphs(self, paragraphs: list[str], separator: str) -> list[str]:
+        """Combine paragraphs into chunks without breaking a paragraph apart."""
+        chunks: list[str] = []
+        paragraph_word_counts = [self._count_words(paragraph) for paragraph in paragraphs]
+        start = 0
+
+        while start < len(paragraphs):
+            end = start
+            current_words = 0
+
+            while end < len(paragraphs):
+                paragraph_words = paragraph_word_counts[end]
+
+                if end == start:
+                    current_words = paragraph_words
+                    end += 1
+                    if paragraph_words > self.chunk_size:
+                        break
+                    continue
+
+                if current_words + paragraph_words > self.chunk_size:
+                    break
+
+                current_words += paragraph_words
+                end += 1
+
+            chunks.append(separator.join(paragraphs[start:end]))
+
+            if end >= len(paragraphs):
+                break
+
+            if self.chunk_overlap <= 0:
+                start = end
+                continue
+
+            overlap_words = 0
+            next_start = end
+
+            while next_start - 1 > start and overlap_words < self.chunk_overlap:
+                next_start -= 1
+                overlap_words += paragraph_word_counts[next_start]
+
+            start = next_start
+
+        return chunks

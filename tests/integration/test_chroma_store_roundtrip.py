@@ -6,12 +6,9 @@ correctness.
 """
 
 import tempfile
-from pathlib import Path
-from typing import Dict, List
 
 import pytest
 
-from src.core.settings import Settings
 from src.libs.vector_store.chroma_store import ChromaStore
 
 
@@ -230,6 +227,26 @@ class TestChromaStoreRoundtrip:
         assert results[0]['metadata']['source'] == 'test.pdf'
         assert results[0]['metadata']['page'] == 42
         assert results[0]['metadata']['title'] == 'Test Document'
+
+    def test_document_field_is_retrieved_text(self, chroma_store):
+        """Stored document text should prefer transformed chunk text over metadata text."""
+        records = [
+            {
+                'id': 'enhanced_chunk0',
+                'vector': [0.5, 0.5, 0.5],
+                'document': 'Figure 1 shows the enhanced visual description.',
+                'metadata': {
+                    'source': 'test.pdf',
+                    'text': '[IMAGE: img_001]\nFigure 1 shows the enhanced visual description.',
+                },
+            }
+        ]
+
+        chroma_store.upsert(records)
+        results = chroma_store.get_by_ids(['enhanced_chunk0'])
+
+        assert results[0]['text'] == 'Figure 1 shows the enhanced visual description.'
+        assert results[0]['metadata']['text'].startswith('[IMAGE: img_001]')
     
     def test_roundtrip_deterministic(self, chroma_store):
         """Test that same query returns same results deterministically."""

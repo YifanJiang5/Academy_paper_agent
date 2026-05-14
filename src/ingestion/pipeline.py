@@ -5,7 +5,7 @@ document ingestion flow:
     1. File Integrity Check (SHA256 skip check)
     2. Document Loading (PDF → Document)
     3. Chunking (Document → Chunks)
-    4. Transform (Refine + Enrich + Caption)
+    4. Transform (Metadata normalization + image/table enhancement)
     5. Encoding (Dense + Sparse vectors)
     6. Storage (VectorStore + BM25 Index + ImageStorage)
 
@@ -21,7 +21,7 @@ from typing import Callable, List, Optional, Dict, Any
 import time
 
 from src.core.settings import Settings, load_settings, resolve_path
-from src.core.types import Document, Chunk
+from src.core.types import Chunk
 from src.core.trace.trace_context import TraceContext
 from src.observability.logger import get_logger
 
@@ -29,11 +29,10 @@ from src.observability.logger import get_logger
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
 from src.libs.loader.pdf_loader import PdfLoader
 from src.libs.embedding.embedding_factory import EmbeddingFactory
-from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+from src.libs.splitter.text_utils import count_words
 
 # Ingestion layer imports
 from src.ingestion.chunking.document_chunker import DocumentChunker
-from src.ingestion.transform.chunk_refiner import ChunkRefiner
 from src.ingestion.transform.metadata_enricher import MetadataEnricher
 from src.ingestion.transform.image_captioner import ImageCaptioner
 from src.ingestion.embedding.dense_encoder import DenseEncoder
@@ -101,9 +100,8 @@ class IngestionPipeline:
     - File integrity checking for incremental processing
     - Document loading (PDF with image extraction)
     - Text chunking with configurable splitter
-    - Chunk refinement (rule-based + LLM)
-    - Metadata enrichment (rule-based + LLM)
-    - Image captioning (Vision LLM)
+    - Structural metadata normalization
+    - Image/table description enhancement
     - Dense embedding (Azure text-embedding-ada-002)
     - Sparse encoding (BM25 term statistics)
     - Vector storage (ChromaDB)
@@ -144,8 +142,10 @@ class IngestionPipeline:
         # Stage 2: Loader
         self.loader = PdfLoader(
             extract_images=True,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
+            image_storage_dir=str(resolve_path(f"data/images/{collection}")),
         )
+        if hasattr(self.loader, "mineru_output_dir"):
+            self.loader.mineru_output_dir = resolve_path(f"data/mineru/{collection}")
         logger.info("  ✓ PdfLoader initialized")
         
         # Stage 3: Chunker
@@ -153,9 +153,6 @@ class IngestionPipeline:
         logger.info("  ✓ DocumentChunker initialized")
         
         # Stage 4: Transforms
-        self.chunk_refiner = ChunkRefiner(settings)
-        logger.info(f"  ✓ ChunkRefiner initialized (use_llm={self.chunk_refiner.use_llm})")
-        
         self.metadata_enricher = MetadataEnricher(settings)
         logger.info(f"  ✓ MetadataEnricher initialized (use_llm={self.metadata_enricher.use_llm})")
         
@@ -221,10 +218,10 @@ class IngestionPipeline:
             if on_progress is not None:
                 on_progress(stage_name, step, _total_stages)
         
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
         logger.info(f"Starting Ingestion Pipeline for: {file_path}")
         logger.info(f"Collection: {self.collection}")
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
         
         try:
             # ─────────────────────────────────────────────────────────────
@@ -237,7 +234,7 @@ class IngestionPipeline:
             logger.info(f"  File hash: {file_hash[:16]}...")
             
             if not self.force and self.integrity_checker.should_skip(file_hash):
-                logger.info(f"  ⏭️  File already processed, skipping (use force=True to reprocess)")
+                logger.info("  ⏭️  File already processed, skipping (use force=True to reprocess)")
                 return PipelineResult(
                     success=True,
                     file_path=str(file_path),
@@ -269,11 +266,12 @@ class IngestionPipeline:
             stages["loading"] = {
                 "doc_id": document.id,
                 "text_length": len(document.text),
-                "image_count": image_count
+                "image_count": image_count,
+                "parser": document.metadata.get("parser", "unknown"),
             }
             if trace is not None:
                 trace.record_stage("load", {
-                    "method": "markitdown",
+                    "method": document.metadata.get("parser", "unknown"),
                     "doc_id": document.id,
                     "text_length": len(document.text),
                     "image_count": image_count,
@@ -294,21 +292,27 @@ class IngestionPipeline:
             if chunks:
                 logger.info(f"  First chunk ID: {chunks[0].id}")
                 logger.info(f"  First chunk preview: {chunks[0].text[:100]}...")
+            chunk_word_counts = [count_words(c.text) for c in chunks]
             
             stages["chunking"] = {
                 "chunk_count": len(chunks),
-                "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0
+                "avg_chunk_size": sum(chunk_word_counts) // len(chunk_word_counts) if chunk_word_counts else 0,
+                "avg_chunk_words": sum(chunk_word_counts) // len(chunk_word_counts) if chunk_word_counts else 0,
+                "avg_chunk_unit": "words",
             }
             if trace is not None:
                 trace.record_stage("split", {
                     "method": "recursive",
                     "chunk_count": len(chunks),
-                    "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0,
+                    "avg_chunk_size": sum(chunk_word_counts) // len(chunk_word_counts) if chunk_word_counts else 0,
+                    "avg_chunk_words": sum(chunk_word_counts) // len(chunk_word_counts) if chunk_word_counts else 0,
+                    "avg_chunk_unit": "words",
                     "chunks": [
                         {
                             "chunk_id": c.id,
                             "text": c.text,
                             "char_len": len(c.text),
+                            "word_count": chunk_word_counts[i],
                             "chunk_index": c.metadata.get("chunk_index", i),
                         }
                         for i, c in enumerate(chunks)
@@ -321,54 +325,60 @@ class IngestionPipeline:
             logger.info("\n🔄 Stage 4: Transform Pipeline")
             _notify("transform", 4)
             
-            # 4a: Chunk Refinement
-            logger.info("  4a. Chunk Refinement...")
             _t0_transform = time.monotonic()
-            # snapshot before refinement
-            _pre_refine_texts = {c.id: c.text for c in chunks}
-            chunks = self.chunk_refiner.transform(chunks, trace)
-            refined_by_llm = sum(1 for c in chunks if c.metadata.get("refined_by") == "llm")
-            refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
-            logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
-            
-            # 4b: Metadata Enrichment
-            logger.info("  4b. Metadata Enrichment...")
+            _pre_transform_texts = {c.id: c.text for c in chunks}
+
+            # 4a: Metadata normalization
+            logger.info("  4a. Metadata Normalization...")
             chunks = self.metadata_enricher.transform(chunks, trace)
-            enriched_by_llm = sum(1 for c in chunks if c.metadata.get("enriched_by") == "llm")
-            enriched_by_rule = sum(1 for c in chunks if c.metadata.get("enriched_by") == "rule")
-            logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
+            normalized = len(chunks)
+            logger.info(f"      Metadata normalized: {normalized}")
             
-            # 4c: Image Captioning
-            logger.info("  4c. Image Captioning...")
+            # 4b: Image and table enhancement
+            logger.info("  4b. Image/Table Enhancement...")
             chunks = self.image_captioner.transform(chunks, trace)
             captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
-            logger.info(f"      Chunks with captions: {captioned}")
+            table_enhanced = sum(1 for c in chunks if c.metadata.get("table_descriptions"))
+            enhancement_failures = getattr(self.image_captioner, "last_failures", [])
+            if not isinstance(enhancement_failures, list):
+                enhancement_failures = []
+            logger.info(f"      Chunks with image captions: {captioned}")
+            logger.info(f"      Chunks with table descriptions: {table_enhanced}")
+            if enhancement_failures:
+                logger.warning("      Image/table enhancement failures: %s", len(enhancement_failures))
             
             stages["transform"] = {
-                "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
-                "metadata_enricher": {"llm": enriched_by_llm, "rule": enriched_by_rule},
-                "image_captioner": {"captioned_chunks": captioned}
+                "metadata_enricher": {"normalized_chunks": normalized},
+                "image_captioner": {
+                    "captioned_chunks": captioned,
+                    "table_enhanced_chunks": table_enhanced,
+                    "failures": enhancement_failures,
+                },
             }
             _elapsed_transform = (time.monotonic() - _t0_transform) * 1000.0
             if trace is not None:
                 trace.record_stage("transform", {
-                    "method": "refine+enrich+caption",
-                    "refined_by_llm": refined_by_llm,
-                    "refined_by_rule": refined_by_rule,
-                    "enriched_by_llm": enriched_by_llm,
-                    "enriched_by_rule": enriched_by_rule,
+                    "method": "metadata+image_table_enhancement",
+                    "metadata_normalized": normalized,
                     "captioned_chunks": captioned,
+                    "table_enhanced_chunks": table_enhanced,
+                    "enhancement_failures": enhancement_failures,
                     "chunks": [
                         {
                             "chunk_id": c.id,
-                            "text_before": _pre_refine_texts.get(c.id, ""),
+                            "text_before": _pre_transform_texts.get(c.id, ""),
                             "text_after": c.text,
                             "char_len": len(c.text),
-                            "refined_by": c.metadata.get("refined_by", ""),
-                            "enriched_by": c.metadata.get("enriched_by", ""),
                             "title": c.metadata.get("title", ""),
-                            "tags": c.metadata.get("tags", []),
-                            "summary": c.metadata.get("summary", ""),
+                            "sub-title": c.metadata.get("sub-title", ""),
+                            "image_caption_count": len(c.metadata.get("image_captions", {})),
+                            "table_description_count": len(c.metadata.get("table_descriptions", [])),
+                            "enhancement_failures": IngestionPipeline._failures_for_chunk(
+                                self,
+                                c,
+                                _pre_transform_texts.get(c.id, ""),
+                                enhancement_failures,
+                            ),
                         }
                         for c in chunks
                     ],
@@ -497,6 +507,7 @@ class IngestionPipeline:
                     for img in images
                 ]
                 trace.record_stage("upsert", {
+                    "method": "vector_bm25_image_storage",
                     "dense_store": {
                         "backend": "ChromaDB",
                         "collection": self.collection,
@@ -554,6 +565,25 @@ class IngestionPipeline:
     def close(self) -> None:
         """Clean up resources."""
         self.image_storage.close()
+
+    def _failures_for_chunk(
+        self,
+        chunk: Chunk,
+        text_before: str,
+        failures: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return enhancement failures that are relevant to one chunk."""
+        relevant: List[Dict[str, Any]] = []
+        for failure in failures:
+            failure_type = failure.get("type")
+            if failure_type == "table" and failure.get("chunk_id") == chunk.id:
+                relevant.append(failure)
+                continue
+            if failure_type == "image":
+                image_id = failure.get("image_id") or failure.get("target")
+                if image_id and "[IMAGE:" in text_before and str(image_id) in text_before:
+                    relevant.append(failure)
+        return relevant
 
 
 def run_pipeline(

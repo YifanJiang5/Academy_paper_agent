@@ -88,12 +88,16 @@ class AzureVisionLLM(BaseVisionLLM):
         Raises:
             ValueError: If required configuration is missing.
         """
-        self.deployment_name = deployment_name or settings.llm.model
-        self.default_temperature = settings.llm.temperature
-        self.default_max_tokens = settings.llm.max_tokens
-        
         # Check source of vision settings
         vision_settings = getattr(settings, "vision_llm", None)
+        self.deployment_name = deployment_name or settings.llm.model
+        vision_temperature = getattr(vision_settings, "temperature", None) if vision_settings else None
+        self.default_temperature = (
+            vision_temperature
+            if vision_temperature is not None
+            else settings.llm.temperature
+        )
+        self.default_max_tokens = settings.llm.max_tokens
         
         # Resolve Deployment Name
         # Priority: arg > vision_settings.deployment > vision_settings.model > settings.llm.model

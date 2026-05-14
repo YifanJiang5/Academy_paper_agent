@@ -31,7 +31,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_load_simple_pdf(self):
         """Load a simple text-only PDF and verify Document structure."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         doc = loader.load(SIMPLE_PDF)
         
         # Verify Document structure
@@ -54,7 +54,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_load_pdf_with_images(self):
         """Load a PDF with images and verify Document structure."""
-        loader = PdfLoader(extract_images=True)
+        loader = PdfLoader(extract_images=True, use_mineru=False)
         doc = loader.load(IMAGES_PDF)
         
         # Verify Document structure
@@ -74,7 +74,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_load_simple_pdf_without_image_extraction(self):
         """Load PDF with image extraction disabled."""
-        loader = PdfLoader(extract_images=False)
+        loader = PdfLoader(extract_images=False, use_mineru=False)
         doc = loader.load(SIMPLE_PDF)
         
         assert isinstance(doc, Document)
@@ -84,7 +84,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_document_is_serializable(self):
         """Verify loaded Document can be serialized to dict/JSON."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         doc = loader.load(SIMPLE_PDF)
         
         doc_dict = doc.to_dict()
@@ -100,7 +100,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_file_hash_consistency(self):
         """Verify same file produces same hash."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         
         doc1 = loader.load(SIMPLE_PDF)
         doc2 = loader.load(SIMPLE_PDF)
@@ -110,7 +110,7 @@ class TestPdfLoaderWithRealFiles:
     
     def test_different_files_different_hash(self):
         """Verify different files produce different hashes."""
-        loader = PdfLoader()
+        loader = PdfLoader(use_mineru=False)
         
         doc1 = loader.load(SIMPLE_PDF)
         doc2 = loader.load(IMAGES_PDF)
@@ -121,6 +121,6 @@ class TestPdfLoaderWithRealFiles:
     def test_custom_image_storage_dir(self):
         """Verify custom image storage directory is respected."""
         custom_dir = "custom/images"
-        loader = PdfLoader(extract_images=True, image_storage_dir=custom_dir)
+        loader = PdfLoader(extract_images=True, image_storage_dir=custom_dir, use_mineru=False)
         
         assert loader.image_storage_dir == Path(custom_dir)

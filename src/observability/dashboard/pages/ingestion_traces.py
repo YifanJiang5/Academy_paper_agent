@@ -14,13 +14,28 @@ Layout:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import streamlit as st
 
 from src.observability.dashboard.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
+
+
+def _chunk_measurement(chunk: Dict[str, Any]) -> tuple[int, str]:
+    """Return the display count and unit for a chunk record."""
+    if "word_count" in chunk:
+        return int(chunk.get("word_count", 0) or 0), "words"
+    return int(chunk.get("char_len", 0) or 0), "chars"
+
+
+def _average_chunk_measurement(data: Dict[str, Any]) -> tuple[int, str]:
+    """Return the display count and unit for average chunk size."""
+    if "avg_chunk_words" in data:
+        return int(data.get("avg_chunk_words", 0) or 0), "words"
+    unit = data.get("avg_chunk_unit", "chars")
+    return int(data.get("avg_chunk_size", 0) or 0), unit
 
 
 def render() -> None:
@@ -37,7 +52,6 @@ def render() -> None:
     st.subheader(f"📋 Trace History ({len(traces)})")
 
     for idx, trace in enumerate(traces):
-        trace_id = trace.get("trace_id", "unknown")
         started = trace.get("started_at", "—")
         total_ms = trace.get("elapsed_ms")
         total_label = f"{total_ms:.0f} ms" if total_ms is not None else "—"
@@ -226,20 +240,21 @@ def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
 
 def _render_split_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
     """Render Split stage: chunk list with texts."""
+    avg_size, avg_unit = _average_chunk_measurement(data)
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Chunks", data.get("chunk_count", 0))
     with c2:
-        st.metric("Avg Size", f"{data.get('avg_chunk_size', 0)} chars")
+        st.metric("Avg Size", f"{avg_size} {avg_unit}")
 
     chunks = data.get("chunks", [])
     if chunks:
         st.markdown("**Chunks after splitting**")
         for i, chunk in enumerate(chunks):
-            char_len = chunk.get("char_len", 0)
+            chunk_size, size_unit = _chunk_measurement(chunk)
             chunk_id = chunk.get("chunk_id", "")
             text = chunk.get("text", "")
-            header = f"📝 **Chunk #{i+1}** — `{chunk_id[:20]}` — {char_len} chars"
+            header = f"📝 **Chunk #{i+1}** — `{chunk_id[:20]}` — {chunk_size} {size_unit}"
             with st.expander(header, expanded=(i < 2)):
                 st.text_area(
                     f"split_{i}",
@@ -254,58 +269,81 @@ def _render_split_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
 
 
 def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
-    """Render Transform stage: before/after refinement + enrichment metadata."""
+    """Render Transform stage: metadata normalization + visual/table enhancement."""
     # Summary metrics
-    c1, c2, c3 = st.columns(3)
+    failures = data.get("enhancement_failures", [])
+    if not isinstance(failures, list):
+        failures = []
+
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric(
-            "Refined (LLM / Rule)",
-            f"{data.get('refined_by_llm', 0)} / {data.get('refined_by_rule', 0)}",
-        )
+        st.metric("Metadata Normalized", data.get("metadata_normalized", 0))
     with c2:
-        st.metric(
-            "Enriched (LLM / Rule)",
-            f"{data.get('enriched_by_llm', 0)} / {data.get('enriched_by_rule', 0)}",
-        )
+        st.metric("Image Captioned", data.get("captioned_chunks", 0))
     with c3:
-        st.metric("Captioned", data.get("captioned_chunks", 0))
+        st.metric("Table Enhanced", data.get("table_enhanced_chunks", 0))
+    with c4:
+        st.metric("Enhancement Failures", len(failures))
+
+    if failures:
+        st.error(
+            f"{len(failures)} image/table enhancement item(s) failed after "
+            "the configured retry attempts."
+        )
+        failure_rows = []
+        for failure in failures:
+            failure_rows.append(
+                {
+                    "Type": failure.get("type", "—"),
+                    "Target": failure.get("target") or failure.get("image_id") or failure.get("chunk_id", "—"),
+                    "Attempts": failure.get("attempts", "—"),
+                    "Error": failure.get("error", "—"),
+                }
+            )
+        st.table(failure_rows)
 
     chunks = data.get("chunks", [])
     if chunks:
         st.markdown("**Per-chunk transform results**")
         for i, chunk in enumerate(chunks):
             chunk_id = chunk.get("chunk_id", "")
-            refined_by = chunk.get("refined_by", "")
-            enriched_by = chunk.get("enriched_by", "")
             title = chunk.get("title", "")
-            tags = chunk.get("tags", [])
-            summary = chunk.get("summary", "")
+            subtitle = chunk.get("sub-title", "")
             text_before = chunk.get("text_before", "")
             text_after = chunk.get("text_after", "")
-
-            badge_parts = []
-            if refined_by:
-                badge_parts.append(f"refined:`{refined_by}`")
-            if enriched_by:
-                badge_parts.append(f"enriched:`{enriched_by}`")
-            badges = " · ".join(badge_parts)
+            image_count = chunk.get("image_caption_count", 0)
+            table_count = chunk.get("table_description_count", 0)
+            chunk_failures = chunk.get("enhancement_failures", [])
+            if not isinstance(chunk_failures, list):
+                chunk_failures = []
+            badges = f"images:{image_count} · tables:{table_count}"
+            if chunk_failures:
+                badges += f" · failures:{len(chunk_failures)}"
 
             header = f"🔄 **Chunk #{i+1}** — `{chunk_id[:20]}` — {badges}"
             with st.expander(header, expanded=(i == 0)):
                 # Metadata from enrichment
-                if title or tags or summary:
-                    st.markdown("**Enriched Metadata**")
-                    meta_cols = st.columns(3)
+                if title or subtitle:
+                    st.markdown("**Structural Metadata**")
+                    meta_cols = st.columns(2)
                     with meta_cols[0]:
                         st.markdown(f"**Title:** {title}" if title else "_No title_")
                     with meta_cols[1]:
-                        if tags:
-                            st.markdown("**Tags:** " + ", ".join(f"`{t}`" for t in tags))
-                        else:
-                            st.markdown("_No tags_")
-                    with meta_cols[2]:
-                        if summary:
-                            st.markdown(f"**Summary:** {summary}")
+                        st.markdown(f"**Sub-title:** {subtitle}" if subtitle else "_No sub-title_")
+
+                if chunk_failures:
+                    st.warning("Image/table enhancement failed for this chunk.")
+                    st.table(
+                        [
+                            {
+                                "Type": failure.get("type", "—"),
+                                "Target": failure.get("target") or failure.get("image_id") or failure.get("chunk_id", "—"),
+                                "Attempts": failure.get("attempts", "—"),
+                                "Error": failure.get("error", "—"),
+                            }
+                            for failure in chunk_failures
+                        ]
+                    )
 
                 # Before / After text comparison
                 if text_before or text_after:
@@ -315,7 +353,7 @@ def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None
                     _h = max(150, min(_max_len // 2, 600))
                     col_before, col_after = st.columns(2)
                     with col_before:
-                        st.markdown("*Before refinement:*")
+                        st.markdown("*Before enhancement:*")
                         st.text_area(
                             f"before_{i}",
                             value=text_before if text_before else "(empty)",
@@ -325,7 +363,7 @@ def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None
                             key=f"transform_before_{trace_idx}_{i}",
                         )
                     with col_after:
-                        st.markdown("*After refinement + enrichment:*")
+                        st.markdown("*After enhancement:*")
                         st.text_area(
                             f"after_{i}",
                             value=text_after if text_after else "(empty)",
@@ -362,14 +400,14 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
 
     with dense_tab:
         st.markdown("Each chunk → **float vector** via embedding model (e.g. `text-embedding-ada-002`)")
+        has_word_counts = any("word_count" in chunk for chunk in chunks)
         dense_rows = []
         for i, chunk in enumerate(chunks):
-            char_len = chunk.get("char_len", 0)
+            chunk_size, _ = _chunk_measurement(chunk)
             dense_rows.append({
                 "#": i + 1,
                 "Chunk ID": chunk.get("chunk_id", ""),
-                "Chars": char_len,
-                "Est. Tokens": max(1, char_len // 3),
+                "Words" if has_word_counts else "Chars": chunk_size,
                 "Dense Dim": chunk.get("dense_dim", data.get("dense_dimension", "—")),
             })
         st.table(dense_rows)

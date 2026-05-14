@@ -15,7 +15,7 @@ Design Principles:
 """
 
 import hashlib
-from typing import List, Dict, Any, Optional
+from typing import List, Any, Optional
 
 from src.core.types import Chunk
 from src.core.settings import Settings
@@ -114,14 +114,16 @@ class VectorUpserter:
             # Generate deterministic chunk ID
             chunk_id = self._generate_chunk_id(chunk)
             chunk_ids.append(chunk_id)
+            metadata_text = chunk.metadata.get("text", chunk.text)
             
             # Build storage record
             record = {
                 "id": chunk_id,
                 "vector": vector,
+                "document": chunk.text,
                 "metadata": {
                     **chunk.metadata,  # Preserve all original metadata
-                    "text": chunk.text,  # Store text for retrieval
+                    "text": metadata_text,  # Store metadata text for retrieval/detail views
                     "chunk_id": chunk_id,  # Redundant but useful for queries
                 },
             }

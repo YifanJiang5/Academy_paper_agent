@@ -1,112 +1,75 @@
 # Modular RAG MCP Server - Configuration
-# This is the main configuration file for the MCP Server.
-# Edit this file to configure LLM, Embedding, VectorStore, and other services.
 
-# =============================================================================
-# LLM Configuration
-# =============================================================================
 llm:
-  provider: "openai"  # Options: openai, azure, ollama, deepseek
-  model: "gpt-4o"
-  deployment_name: "gpt-4o"
-  azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
-  api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
+  provider: "openai"
+  model: "kimi-k2.5"
+  deployment_name: ""
+  azure_endpoint: ""
+  api_version: ""
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "https://api.moonshot.cn/v1"
   temperature: 0.0
   max_tokens: 4096
 
-# =============================================================================
-# Embedding Configuration
-# =============================================================================
 embedding:
-  provider: "openai"  # Options: openai, azure, ollama
-  model: "text-embedding-ada-002"
-  dimensions: 1536  # text-embedding-ada-002 固定维度 (不传递给API, 仅用于验证)
-  # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
-  azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
-  deployment_name: "text-embedding-ada-002"
-  api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
-  # OpenAI-specific settings (if provider is openai):
-  # api_key: "YOUR_API_KEY_HERE"
+  provider: "openai"
+  model: "Qwen/Qwen3-Embedding-8B"
+  dimensions: 4096
+  azure_endpoint: ""
+  deployment_name: ""
+  api_version: ""
+  api_key: "${SILICON_FLOW_API_KEY}"
+  base_url: "https://api.siliconflow.cn/v1"
 
-# =============================================================================
-# Vision LLM Configuration (for Image Captioning)
-# =============================================================================
 vision_llm:
-  enabled: true  # Set to true to enable vision capabilities
-  provider: "openai"  # Options: openai, azure, ollama
-  model: "gpt-4o"  # Options: gpt-4o, gpt-4-vision-preview (OpenAI), llava (Ollama)
-  # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
-  azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
-  deployment_name: "gpt-4o"
-  api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
-  # Ollama-specific settings (if provider is ollama):
-  # base_url: "http://localhost:11434"
-  max_image_size: 2048  # Max dimension (width/height) for image compression
+  enabled: true
+  provider: "openai"
+  model: "kimi-k2.5"
+  azure_endpoint: ""
+  deployment_name: ""
+  api_version: ""
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "https://api.moonshot.cn/v1"
+  max_image_size: 2048
+  temperature: 1.0
 
-# =============================================================================
-# Vector Store Configuration
-# =============================================================================
 vector_store:
-  provider: "chroma"  # Options: chroma, qdrant, pinecone
+  provider: "chroma"
   persist_directory: "./data/db/chroma"
   collection_name: "knowledge_hub"
 
-# =============================================================================
-# Retrieval Configuration
-# =============================================================================
 retrieval:
   dense_top_k: 20
   sparse_top_k: 20
   fusion_top_k: 10
-  rrf_k: 60  # RRF constant
+  rrf_k: 60
 
-# =============================================================================
-# Rerank Configuration
-# =============================================================================
 rerank:
-  enabled: false
-  provider: "none"  # Options: none, cross_encoder, llm
-  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  enabled: true
+  provider: "llm"
+  model: "kimi-k2.5"
   top_k: 5
 
-# =============================================================================
-# Evaluation Configuration
-# =============================================================================
 evaluation:
   enabled: false
-  provider: "custom"  # Options: ragas, deepeval, custom
+  provider: "custom"
   metrics:
     - "hit_rate"
     - "mrr"
     - "faithfulness"
 
-# =============================================================================
-# Observability Configuration
-# =============================================================================
 observability:
-  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
   trace_enabled: true
   trace_file: "./logs/traces.jsonl"
   structured_logging: true
 
-# =============================================================================
-# Ingestion Configuration
-# =============================================================================
 ingestion:
   chunk_size: 1000
   chunk_overlap: 200
-  splitter: "recursive"  # Options: recursive, semantic, fixed_length
+  splitter: "recursive"
   batch_size: 100
-  
-  # Chunk Refiner Configuration (C5)
   chunk_refiner:
-    use_llm: true  # Set to true to enable LLM-based refinement (requires LLM config)
-    # When use_llm is false or LLM call fails, falls back to rule-based refinement
-  
-  # Metadata Enricher Configuration (C6)
+    use_llm: false
   metadata_enricher:
-    use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)
-    # When use_llm is false or LLM call fails, falls back to rule-based enrichment
+    use_llm: false
